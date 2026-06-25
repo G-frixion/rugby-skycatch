@@ -1,0 +1,23 @@
+version: "3.8"
+
+services:
+  rugby-skycatch:
+    build: .
+    container_name: rugby-skycatch
+    ports:
+      - "${PORT:-8080}:80"
+    environment:
+      - DEBUG=${DEBUG:-false}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    labels:
+      - "app=rugby-skycatch"
+      - "version=1.0.0"
+
+networks:
+  default:
+    name: rugby-net
