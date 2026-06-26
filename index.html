@@ -22,10 +22,10 @@
     canvas { border: 3px solid #f5a623; border-radius: 8px; box-shadow: 0 0 30px rgba(245,166,35,0.3); background: #16213e; display: block; }
     #overlay {
       position: absolute; top: 50%; left: 50%;
-      transform: translate(-50%, -50%);
-      background: rgba(10,10,30,0.92); border: 2px solid #f5a623;
-      border-radius: 12px; padding: 40px 60px; text-align: center;
-      display: none; z-index: 10; min-width: 320px;
+  transform: translate(-50%, -50%);
+  background: rgba(10,10,30,0.92); border: 2px solid #f5a623;
+  border-radius: 12px; padding: 40px 60px; text-align: center;
+  z-index: 10; min-width: 320px;
     }
     #overlay h2 { font-size: 2rem; color: #f5a623; margin-bottom: 16px; }
     #overlay p  { font-size: 1.1rem; margin: 8px 0; color: #ccc; }
@@ -360,7 +360,9 @@
 
   // ── Affichage menu initial ────────────────────────────────────
   draw();
-  overlay.style.display = 'block';
+  overlay.style.display = 'flex';
+overlay.style.flexDirection = 'column';
+overlay.style.alignItems = 'center';
 </script>
 </body>
 </html>
