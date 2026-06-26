@@ -22,10 +22,10 @@
     canvas { border: 3px solid #f5a623; border-radius: 8px; box-shadow: 0 0 30px rgba(245,166,35,0.3); background: #16213e; display: block; width: 600px; height: 500px; }
     #overlay {
       position: absolute; top: 50%; left: 50%;
-  transform: translate(-50%, -50%);
-  background: rgba(10,10,30,0.92); border: 2px solid #f5a623;
-  border-radius: 12px; padding: 40px 60px; text-align: center;
-  z-index: 10; min-width: 320px;
+      transform: translate(-50%, -50%);
+      background: rgba(10,10,30,0.92); border: 2px solid #f5a623;
+      border-radius: 12px; padding: 40px 60px; text-align: center;
+      display: none; z-index: 10; min-width: 320px;
     }
     #overlay h2 { font-size: 2rem; color: #f5a623; margin-bottom: 16px; }
     #overlay p  { font-size: 1.1rem; margin: 8px 0; color: #ccc; }
@@ -37,7 +37,6 @@
     }
     button:hover { transform: scale(1.05); box-shadow: 0 0 15px rgba(245,166,35,0.6); }
     #controls { margin-top: 10px; font-size: 0.85rem; color: #888; }
-    #legend { margin-top: 8px; font-size: 0.82rem; color: #666; display: flex; gap: 20px; }
     #stats-btn {
       position: fixed; top: 16px; right: 20px; padding: 8px 18px;
       font-size: 0.9rem; background: #333; color: #f5a623;
@@ -53,10 +52,6 @@
     #stats-page table { border-collapse: collapse; margin-top: 16px; font-size: 1rem; }
     #stats-page td, #stats-page th { padding: 8px 24px; border: 1px solid #333; text-align: center; }
     #stats-page th { color: #f5a623; background: #111; }
-    .flash-overlay {
-      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-      pointer-events: none; border-radius: 6px;
-    }
   </style>
 </head>
 <body>
@@ -72,7 +67,6 @@
 
 <div style="position:relative; display:inline-block;">
   <canvas id="gameCanvas" width="600" height="500"></canvas>
-  <canvas id="flashCanvas" width="600" height="500" class="flash-overlay" style="position:absolute;top:0;left:0;pointer-events:none;"></canvas>
   <div id="overlay">
     <h2 id="overlay-title">Rugby SkyCatch 🏉</h2>
     <p id="overlay-msg">Attrape les ballons avant qu'ils touchent le sol !</p>
@@ -87,7 +81,6 @@
 
 <button id="stats-btn" onclick="showStats()">📊 Stats globales</button>
 
-<!-- Page statistiques -->
 <div id="stats-page">
   <h2 style="color:#f5a623;font-size:1.8rem;">📊 Statistiques globales</h2>
   <table>
@@ -103,266 +96,261 @@
   <button onclick="hideStats()" style="margin-top:24px;">✕ Fermer</button>
 </div>
 
-<script src="src/game.js"></script>
 <script>
-  // ── Persistance ──────────────────────────────────────────────
-  let bestScore    = parseInt(localStorage.getItem('rugby_best')    || '0');
-  let gamesPlayed  = parseInt(localStorage.getItem('rugby_games')   || '0');
-  let totalCaught  = parseInt(localStorage.getItem('rugby_caught')  || '0');
-  let totalMissed  = parseInt(localStorage.getItem('rugby_missed')  || '0');
-  let gameHistory  = JSON.parse(localStorage.getItem('rugby_history') || '[]');
+const CANVAS_W = 600, CANVAS_H = 500;
+const PLAYER_W = 60, PLAYER_H = 20;
+const PLAYER_SPEED = 7;
+const BALL_BASE_SPEED = 2.5;
+const BALL_INTERVAL_MS = 1200;
+const GAME_DURATION = 60;
 
-  // ── DOM ──────────────────────────────────────────────────────
-  const canvas     = document.getElementById('gameCanvas');
-  const ctx        = canvas.getContext('2d');
-  const flashCvs   = document.getElementById('flashCanvas');
-  const flashCtx   = flashCvs.getContext('2d');
-  const overlay    = document.getElementById('overlay');
-  const scoreEl    = document.getElementById('score-display');
-  const livesEl    = document.getElementById('lives-display');
-  const bestEl     = document.getElementById('best-display');
-  const timerEl    = document.getElementById('timer-display');
+function createGameState() {
+  return {
+    status: 'menu',
+    score: 0, lives: 3, caught: 0, missed: 0,
+    timeLeft: GAME_DURATION,
+    playerX: CANVAS_W / 2 - PLAYER_W / 2,
+    balls: [], difficulty: 1,
+    ballSpawnInterval: BALL_INTERVAL_MS,
+    gameTimer: 0, ballTimer: 0,
+  };
+}
 
-  bestEl.textContent = bestScore;
+function getPointsForBall(type) {
+  if (type === 'gold') return 5;
+  if (type === 'red') return 0;
+  return 1;
+}
 
-  // ── État ─────────────────────────────────────────────────────
-  let gameState = createGameState();
-  let keys      = { left: false, right: false };
-  let flash     = null;
-  let lastTime  = null;
-  let animId    = null;
+function computeDifficulty(t) { return 1 + Math.floor(t / 15) * 0.3; }
+function computeSpawnInterval(t) { return Math.max(500, BALL_INTERVAL_MS - Math.floor(t / 15) * 150); }
 
-  // ── Clavier ──────────────────────────────────────────────────
-  document.addEventListener('keydown', e => {
-    if (['ArrowLeft','ArrowRight'].includes(e.key)) e.preventDefault();
-    if (e.key === 'ArrowLeft'  || e.key === 'q' || e.key === 'Q') keys.left  = true;
-    if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') keys.right = true;
+function pickBallType(rand) {
+  if (rand > 0.85) return 'gold';
+  if (rand < 0.12) return 'red';
+  return 'normal';
+}
+
+function checkCollision(ball, playerX) {
+  const playerY = CANVAS_H - 40;
+  return ball.y + ball.r > playerY && ball.y - ball.r < playerY + PLAYER_H &&
+         ball.x > playerX - ball.r && ball.x < playerX + PLAYER_W + ball.r;
+}
+
+function movePlayer(playerX, keys) {
+  let x = playerX;
+  if (keys.left)  x = Math.max(0, x - PLAYER_SPEED);
+  if (keys.right) x = Math.min(CANVAS_W - PLAYER_W, x + PLAYER_SPEED);
+  return x;
+}
+
+// DOM
+const canvas   = document.getElementById('gameCanvas');
+const ctx      = canvas.getContext('2d');
+const overlay  = document.getElementById('overlay');
+const scoreEl  = document.getElementById('score-display');
+const livesEl  = document.getElementById('lives-display');
+const bestEl   = document.getElementById('best-display');
+const timerEl  = document.getElementById('timer-display');
+
+let bestScore   = parseInt(localStorage.getItem('rugby_best')    || '0');
+let gamesPlayed = parseInt(localStorage.getItem('rugby_games')   || '0');
+let totalCaught = parseInt(localStorage.getItem('rugby_caught')  || '0');
+let totalMissed = parseInt(localStorage.getItem('rugby_missed')  || '0');
+let gameHistory = JSON.parse(localStorage.getItem('rugby_history') || '[]');
+
+bestEl.textContent = bestScore;
+
+let gameState = createGameState();
+let keys = { left: false, right: false };
+let flash = null, lastTime = null, animId = null;
+
+document.addEventListener('keydown', e => {
+  if (['ArrowLeft','ArrowRight'].includes(e.key)) e.preventDefault();
+  if (e.key === 'ArrowLeft'  || e.key === 'q' || e.key === 'Q') keys.left  = true;
+  if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') keys.right = true;
+});
+document.addEventListener('keyup', e => {
+  if (e.key === 'ArrowLeft'  || e.key === 'q' || e.key === 'Q') keys.left  = false;
+  if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') keys.right = false;
+});
+
+function startGame() {
+  gameState = createGameState();
+  gameState.status = 'playing';
+  keys = { left: false, right: false };
+  flash = null;
+  overlay.style.display = 'none';
+  document.getElementById('overlay-score').style.display  = 'none';
+  document.getElementById('overlay-caught').style.display = 'none';
+  document.getElementById('overlay-msg').style.display    = 'block';
+  lastTime = null;
+  if (animId) cancelAnimationFrame(animId);
+  animId = requestAnimationFrame(loop);
+  console.log('GAME_START');
+}
+
+function loop(ts) {
+  if (!lastTime) lastTime = ts;
+  const dt = Math.min((ts - lastTime) / 1000, 0.05);
+  lastTime = ts;
+
+  const prevLives = gameState.lives;
+  const prevScore = gameState.score;
+
+  // Update
+  gameState.playerX = movePlayer(gameState.playerX, keys);
+  gameState.gameTimer += dt;
+  gameState.timeLeft = Math.max(0, GAME_DURATION - Math.floor(gameState.gameTimer));
+  gameState.difficulty = computeDifficulty(gameState.gameTimer);
+  gameState.ballSpawnInterval = computeSpawnInterval(gameState.gameTimer);
+
+  gameState.ballTimer += dt * 1000;
+  if (gameState.ballTimer >= gameState.ballSpawnInterval) {
+    gameState.ballTimer = 0;
+    const type = pickBallType(Math.random());
+    gameState.balls.push({ x: 30 + Math.random() * (CANVAS_W - 60), y: -20, r: type === 'gold' ? 20 : 16, type, rot: 0 });
+  }
+
+  const speed = BALL_BASE_SPEED * gameState.difficulty;
+  gameState.balls = gameState.balls.filter(ball => {
+    ball.y += speed;
+    ball.rot += 0.04;
+    if (checkCollision(ball, gameState.playerX)) {
+      if (ball.type === 'red') { gameState.lives--; }
+      else { gameState.score += getPointsForBall(ball.type); gameState.caught++; }
+      return false;
+    }
+    if (ball.y > CANVAS_H + ball.r) {
+      if (ball.type !== 'red') { gameState.lives--; gameState.missed++; }
+      return false;
+    }
+    return true;
   });
-  document.addEventListener('keyup', e => {
-    if (e.key === 'ArrowLeft'  || e.key === 'q' || e.key === 'Q') keys.left  = false;
-    if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') keys.right = false;
-  });
 
-  // ── Start ────────────────────────────────────────────────────
-  function startGame() {
-    gameState = createGameState();
-    gameState.status = 'playing';
-    keys = { left: false, right: false };
-    flash = null;
-    overlay.style.display = 'none';
-    document.getElementById('overlay-score').style.display  = 'none';
-    document.getElementById('overlay-caught').style.display = 'none';
-    document.getElementById('overlay-msg').style.display    = 'block';
-    lastTime = null;
-    if (animId) cancelAnimationFrame(animId);
-    animId = requestAnimationFrame(loop);
-    console.log('GAME_START');
-  }
+  if (gameState.score > prevScore) flash = { color: 'gold', remaining: 0.15 };
+  if (gameState.lives < prevLives)  flash = { color: 'red',  remaining: 0.15 };
 
-  // ── Boucle ───────────────────────────────────────────────────
-  function loop(ts) {
-    if (!lastTime) lastTime = ts;
-    const dt = Math.min((ts - lastTime) / 1000, 0.05);
-    lastTime = ts;
+  scoreEl.textContent = gameState.score;
+  livesEl.textContent = Math.max(0, gameState.lives);
+  timerEl.textContent = gameState.timeLeft;
 
-    const prevLives = gameState.lives;
-    const prevScore = gameState.score;
-
-    const spawnRand = Math.random();
-    const spawnX = 30 + Math.random() * (600 - 60);
-    updateGame(gameState, dt, keys, spawnRand, spawnX);
-
-    // Feedback visuel
-    if (gameState.score > prevScore) triggerFlash('gold');
-    if (gameState.lives < prevLives)  triggerFlash('red');
-
-    // HUD
-    scoreEl.textContent = gameState.score;
-    livesEl.textContent = Math.max(0, gameState.lives);
-    timerEl.textContent = gameState.timeLeft;
-
-    draw();
-
-    if (gameState.status === 'playing') {
-      animId = requestAnimationFrame(loop);
-    } else {
-      endGame();
-    }
-  }
-
-  function triggerFlash(color) {
-    flash = { color, alpha: 0.35, remaining: 0.15 };
-  }
-
-  // ── Fin ──────────────────────────────────────────────────────
-  function endGame() {
-    if (gameState.score > bestScore) {
-      bestScore = gameState.score;
-      localStorage.setItem('rugby_best', bestScore);
-      bestEl.textContent = bestScore;
-    }
-    gamesPlayed++;
-    totalCaught += gameState.caught;
-    totalMissed += gameState.missed;
-    localStorage.setItem('rugby_games',   gamesPlayed);
-    localStorage.setItem('rugby_caught',  totalCaught);
-    localStorage.setItem('rugby_missed',  totalMissed);
-
-    gameHistory.unshift({
-      score:  gameState.score,
-      caught: gameState.caught,
-      missed: gameState.missed,
-      date:   new Date().toLocaleString('fr-FR')
-    });
-    if (gameHistory.length > 10) gameHistory.pop();
-    localStorage.setItem('rugby_history', JSON.stringify(gameHistory));
-
-    console.log(`GAME_END score=${gameState.score} caught=${gameState.caught} missed=${gameState.missed}`);
-
-    const isWin = gameState.score >= 20;
-    document.getElementById('overlay-title').textContent = isWin ? '🏆 Excellent !' : '⏱️ Partie terminée';
-    document.getElementById('overlay-msg').style.display    = 'none';
-    document.getElementById('overlay-score').style.display  = 'block';
-    document.getElementById('overlay-caught').style.display = 'block';
-    document.getElementById('final-score').textContent  = gameState.score;
-    document.getElementById('final-caught').textContent = gameState.caught;
-    document.getElementById('final-missed').textContent = gameState.missed;
-    document.getElementById('overlay-btn').textContent  = '▶ Rejouer';
-    overlay.style.display = 'block';
-  }
-
-  // ── Dessin ───────────────────────────────────────────────────
-  function draw() {
-    const W = 600, H = 500;
-    ctx.clearRect(0, 0, W, H);
-
-    // Fond
-    const bg = ctx.createLinearGradient(0, 0, 0, H);
-    bg.addColorStop(0, '#0d1b2a');
-    bg.addColorStop(1, '#1b3a4b');
-    ctx.fillStyle = bg;
-    ctx.fillRect(0, 0, W, H);
-
-    // Grille
-    ctx.strokeStyle = 'rgba(255,255,255,0.05)';
-    ctx.lineWidth = 1;
-    for (let x = 60; x < W; x += 60) {
-      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
-    }
-
-    // Herbe
-    ctx.fillStyle = '#1a5c2e';
-    ctx.fillRect(0, H - 20, W, 20);
-    for (let x = 0; x < W; x += 30) {
-      ctx.fillStyle = x % 60 === 0 ? '#1a5c2e' : '#1e6b34';
-      ctx.fillRect(x, H - 20, 15, 20);
-    }
-
-    // Ballons
-    for (const ball of gameState.balls) drawBall(ball);
-
-    // Joueur
-    drawPlayer(gameState.playerX);
-
-    // Flash
-    flashCtx.clearRect(0, 0, W, H);
-    if (flash && flash.remaining > 0) {
-      flashCtx.fillStyle = flash.color === 'gold'
-        ? `rgba(255,200,0,${flash.alpha})`
-        : `rgba(220,30,30,${flash.alpha})`;
-      flashCtx.fillRect(0, 0, W, H);
-      flash.remaining -= 0.016;
-    }
-  }
-
-  function drawBall(ball) {
-    ctx.save();
-    ctx.translate(ball.x, ball.y);
-    ctx.rotate(ball.rot);
-
-    if (ball.type === 'red') {
-      ctx.fillStyle = '#cc0000';
-      ctx.strokeStyle = '#ff5555';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.roundRect(-14, -18, 28, 36, 4);
-      ctx.fill(); ctx.stroke();
-      ctx.font = '18px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      ctx.fillText('🟥', 0, 0);
-    } else {
-      const color = ball.type === 'gold' ? '#ffd700' : '#c8702a';
-      const dark  = ball.type === 'gold' ? '#b8960a' : '#8b4513';
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      ctx.ellipse(0, 0, ball.r, ball.r * 1.55, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = 'rgba(255,255,255,0.22)';
-      ctx.beginPath();
-      ctx.ellipse(-ball.r * 0.25, -ball.r * 0.4, ball.r * 0.3, ball.r * 0.5, -0.3, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = dark;
-      ctx.lineWidth = 1.5;
-      ctx.beginPath(); ctx.moveTo(0, -ball.r * 1.2); ctx.lineTo(0, ball.r * 1.2); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(-ball.r*0.3, -ball.r*0.3); ctx.lineTo(ball.r*0.3, -ball.r*0.3); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(-ball.r*0.3,  ball.r*0.3); ctx.lineTo(ball.r*0.3,  ball.r*0.3); ctx.stroke();
-      if (ball.type === 'gold') {
-        ctx.fillStyle = 'rgba(255,255,100,0.35)';
-        ctx.beginPath(); ctx.arc(0, 0, ball.r * 1.7, 0, Math.PI * 2); ctx.fill();
-      }
-    }
-    ctx.restore();
-  }
-
-  function drawPlayer(px) {
-    const py = 500 - 40;
-    ctx.fillStyle = '#005f73';
-    ctx.strokeStyle = '#94d2bd';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.roundRect(px, py, 60, 20, 6);
-    ctx.fill(); ctx.stroke();
-    ctx.fillStyle = '#f4a261';
-    ctx.beginPath();
-    ctx.arc(px + 30, py - 10, 8, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = '#005f73';
-    ctx.lineWidth = 4;
-    ctx.beginPath(); ctx.moveTo(px + 5, py + 6); ctx.lineTo(px - 8, py + 14); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(px + 55, py + 6); ctx.lineTo(px + 68, py + 14); ctx.stroke();
-  }
-
-  // ── Stats page ───────────────────────────────────────────────
-  function showStats() {
-    const rate = totalCaught + totalMissed > 0
-      ? ((totalCaught / (totalCaught + totalMissed)) * 100).toFixed(1) + '%'
-      : '—';
-    document.getElementById('stats-body').innerHTML = `
-      <tr><td>Parties jouées</td><td>${gamesPlayed}</td></tr>
-      <tr><td>Meilleur score</td><td>${bestScore}</td></tr>
-      <tr><td>Ballons attrapés (total)</td><td>${totalCaught}</td></tr>
-      <tr><td>Ballons ratés (total)</td><td>${totalMissed}</td></tr>
-      <tr><td>Taux de réussite</td><td>${rate}</td></tr>
-      <tr><td>Score moyen</td><td>${gamesPlayed > 0
-        ? (gameHistory.reduce((s,h)=>s+h.score,0)/gameHistory.length).toFixed(1)
-        : '—'}</td></tr>
-    `;
-    document.getElementById('history-body').innerHTML = gameHistory.map((h,i) =>
-      `<tr><td>${i+1}</td><td>${h.score}</td><td>${h.caught}</td><td>${h.missed}</td><td>${h.date}</td></tr>`
-    ).join('') || '<tr><td colspan="5" style="color:#555">Aucune partie jouée</td></tr>';
-    document.getElementById('stats-page').classList.add('visible');
-  }
-
-  function hideStats() {
-    document.getElementById('stats-page').classList.remove('visible');
-  }
-
-  // ── Affichage menu initial ────────────────────────────────────
   draw();
-  overlay.style.display = 'flex';
-overlay.style.flexDirection = 'column';
-overlay.style.alignItems = 'center';
+
+  if (gameState.lives <= 0 || gameState.timeLeft <= 0) { endGame(); return; }
+  if (gameState.status === 'playing') animId = requestAnimationFrame(loop);
+}
+
+function endGame() {
+  gameState.status = 'gameover';
+  if (gameState.score > bestScore) {
+    bestScore = gameState.score;
+    localStorage.setItem('rugby_best', bestScore);
+    bestEl.textContent = bestScore;
+  }
+  gamesPlayed++; totalCaught += gameState.caught; totalMissed += gameState.missed;
+  localStorage.setItem('rugby_games', gamesPlayed);
+  localStorage.setItem('rugby_caught', totalCaught);
+  localStorage.setItem('rugby_missed', totalMissed);
+  gameHistory.unshift({ score: gameState.score, caught: gameState.caught, missed: gameState.missed, date: new Date().toLocaleString('fr-FR') });
+  if (gameHistory.length > 10) gameHistory.pop();
+  localStorage.setItem('rugby_history', JSON.stringify(gameHistory));
+  console.log(`GAME_END score=${gameState.score} caught=${gameState.caught} missed=${gameState.missed}`);
+
+  document.getElementById('overlay-title').textContent = gameState.score >= 20 ? '🏆 Excellent !' : '⏱️ Partie terminée';
+  document.getElementById('overlay-msg').style.display    = 'none';
+  document.getElementById('overlay-score').style.display  = 'block';
+  document.getElementById('overlay-caught').style.display = 'block';
+  document.getElementById('final-score').textContent  = gameState.score;
+  document.getElementById('final-caught').textContent = gameState.caught;
+  document.getElementById('final-missed').textContent = gameState.missed;
+  document.getElementById('overlay-btn').textContent  = '▶ Rejouer';
+  overlay.style.display = 'block';
+}
+
+function draw() {
+  ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
+  const bg = ctx.createLinearGradient(0, 0, 0, CANVAS_H);
+  bg.addColorStop(0, '#0d1b2a'); bg.addColorStop(1, '#1b3a4b');
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.05)'; ctx.lineWidth = 1;
+  for (let x = 60; x < CANVAS_W; x += 60) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,CANVAS_H); ctx.stroke(); }
+
+  ctx.fillStyle = '#1a5c2e'; ctx.fillRect(0, CANVAS_H-20, CANVAS_W, 20);
+  for (let x = 0; x < CANVAS_W; x += 30) {
+    ctx.fillStyle = x % 60 === 0 ? '#1a5c2e' : '#1e6b34';
+    ctx.fillRect(x, CANVAS_H-20, 15, 20);
+  }
+
+  for (const ball of gameState.balls) drawBall(ball);
+  drawPlayer(gameState.playerX);
+
+  if (flash && flash.remaining > 0) {
+    ctx.fillStyle = flash.color === 'gold' ? 'rgba(255,200,0,0.35)' : 'rgba(220,30,30,0.35)';
+    ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+    flash.remaining -= 0.016;
+  }
+}
+
+function drawBall(ball) {
+  ctx.save(); ctx.translate(ball.x, ball.y); ctx.rotate(ball.rot);
+  if (ball.type === 'red') {
+    ctx.fillStyle = '#cc0000'; ctx.strokeStyle = '#ff5555'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.roundRect(-14,-18,28,36,4); ctx.fill(); ctx.stroke();
+    ctx.font = '18px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('🟥', 0, 0);
+  } else {
+    const color = ball.type === 'gold' ? '#ffd700' : '#c8702a';
+    const dark  = ball.type === 'gold' ? '#b8960a' : '#8b4513';
+    ctx.fillStyle = color;
+    ctx.beginPath(); ctx.ellipse(0,0,ball.r,ball.r*1.55,0,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.22)';
+    ctx.beginPath(); ctx.ellipse(-ball.r*0.25,-ball.r*0.4,ball.r*0.3,ball.r*0.5,-0.3,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle = dark; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(0,-ball.r*1.2); ctx.lineTo(0,ball.r*1.2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(-ball.r*0.3,-ball.r*0.3); ctx.lineTo(ball.r*0.3,-ball.r*0.3); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(-ball.r*0.3,ball.r*0.3); ctx.lineTo(ball.r*0.3,ball.r*0.3); ctx.stroke();
+    if (ball.type === 'gold') {
+      ctx.fillStyle = 'rgba(255,255,100,0.35)';
+      ctx.beginPath(); ctx.arc(0,0,ball.r*1.7,0,Math.PI*2); ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+
+function drawPlayer(px) {
+  const py = CANVAS_H - 40;
+  ctx.fillStyle = '#005f73'; ctx.strokeStyle = '#94d2bd'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.roundRect(px,py,PLAYER_W,PLAYER_H,6); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#f4a261';
+  ctx.beginPath(); ctx.arc(px+30,py-10,8,0,Math.PI*2); ctx.fill();
+  ctx.strokeStyle = '#005f73'; ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.moveTo(px+5,py+6); ctx.lineTo(px-8,py+14); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(px+55,py+6); ctx.lineTo(px+68,py+14); ctx.stroke();
+}
+
+function showStats() {
+  const rate = totalCaught+totalMissed > 0 ? ((totalCaught/(totalCaught+totalMissed))*100).toFixed(1)+'%' : '—';
+  document.getElementById('stats-body').innerHTML = `
+    <tr><td>Parties jouées</td><td>${gamesPlayed}</td></tr>
+    <tr><td>Meilleur score</td><td>${bestScore}</td></tr>
+    <tr><td>Ballons attrapés</td><td>${totalCaught}</td></tr>
+    <tr><td>Ballons ratés</td><td>${totalMissed}</td></tr>
+    <tr><td>Taux de réussite</td><td>${rate}</td></tr>
+    <tr><td>Score moyen</td><td>${gameHistory.length > 0 ? (gameHistory.reduce((s,h)=>s+h.score,0)/gameHistory.length).toFixed(1) : '—'}</td></tr>
+  `;
+  document.getElementById('history-body').innerHTML = gameHistory.map((h,i) =>
+    `<tr><td>${i+1}</td><td>${h.score}</td><td>${h.caught}</td><td>${h.missed}</td><td>${h.date}</td></tr>`
+  ).join('') || '<tr><td colspan="5" style="color:#555">Aucune partie</td></tr>';
+  document.getElementById('stats-page').classList.add('visible');
+}
+
+function hideStats() { document.getElementById('stats-page').classList.remove('visible'); }
+
+// Init
+draw();
+overlay.style.display = 'block';
 </script>
 </body>
 </html>
